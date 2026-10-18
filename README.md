@@ -2,68 +2,63 @@
 
 Implementation of **YieldLineage: Reliability-Gated Wafer Genealogy Reasoning for Early Yield-Excursion Warning in Semiconductor Manufacturing**.
 
-Source packets carry availability, uncertainty, quality, and acquisition time. Their reliability attenuates order-constrained graph messages. A wafer summary and separate lot head provide excursion probabilities; directed evidence edges and path weights are exported. The causal adjacency intersects supplied genealogy with the prediction cutoff, preventing late metrology from entering early decisions.
+## Installation
 
-## Install
-
-Use Python 3.10 or later. Create and activate a virtual environment, then install:
+Python >=3.10.
 
 ```bash
 python -m pip install -e .
 ```
 
-## Prepare data
+Inspection environment: Python 3.13.5, NumPy 2.1.3, PyTorch 2.7.1+cu118, SciPy 1.15.3 and scikit-learn 1.6.1. Checks cover Python syntax, JSON/TOML parsing and CLI options against parser definitions; training and evaluation were not run.
+
+## Data and preprocessing
+
+Generate timestamped packet graphs at cutoffs 2/4/6, four wafers per lot and lot-isolated groups. Excursions have event time 8; controls use infinity.
+
+```bash
+yieldlineage demo --output data/generated.npz --count 192 --config config.json --seed 13
+yieldlineage prepare --input data/generated.npz --output data/prepared
+```
 
 `x[N,V,D]` is a graph of source/process/wafer packets, `adjacency[N,V,V]` indicates allowed source-to-destination edges, `time[N,V]` acquisition times, `cutoff[N]` decision times, `available[N,V]`, `uncertainty[N,V]`, and `quality[N,V,Q]` describe reliability. `y[N]` and `lot_y[N]` are wafer/lot excursion labels. Each group is a complete lot; construct packets from actual process/metrology genealogy with timestamped availability.
 
-Arrays use numeric NPZ format, loaded without pickle. `group[N]` identifies independent subjects, devices, scenes, lots, or source images. Related samples must share a group. Optional `split[N]` codes 0/1/2/3 explicitly assign training/validation/calibration/test (three-role input using 0/1/2 remains supported); otherwise ordered groups are allocated 60/15/10/15 to training/validation/calibration/test. Test data never select model parameters or checkpoints.
+Numeric NPZ input uses `group` to keep related samples together. `prepare` writes train/validation/calibration/test archives from ordered groups (60/15/10/15), or honors explicit `split` codes 0/1/2/3.
+
+Real warning streams also require numeric `wafer`, increasing `cutoff`, and one `event_time` per wafer; the configured threshold and persistence are fixed before test.
+
+## Training and inference
 
 ```bash
-yieldlineage demo --output data/example.npz --count 96 --config config.json
-yieldlineage prepare --input data/example.npz --output data/prepared
+yieldlineage train --input data/prepared --output runs/full --config config.json --variant full --epochs 100 --batch-size 16 --seed 13
 ```
 
-The demo defines a small synthetic problem with the documented tensor interface. Use application data in that schema for the paper's evaluation settings.
+Use `--device cuda` to select CUDA; CPU is the default. Keep the configuration, splits and seed fixed across comparisons.
 
-## Train and execute
+## Evaluation
 
 ```bash
-yieldlineage train --input data/prepared --output runs/full --config config.json --variant full --epochs 100 --batch-size 16
 yieldlineage evaluate --input data/prepared/test.npz --model runs/full/model.pt --output runs/full/evaluation
-yieldlineage plot --input runs --output runs/figures
 ```
 
-Training uses AdamW and selects the minimum validation objective. `model.pt` stores parameters and configuration; `history.json` records training/validation objectives. Evaluation exports predictions and mechanism tensors to `predictions.npz` and computed scores to `metrics.json`. Plotting exports comparison charts from those actual evaluation files.
+## Ablations
 
-`--device cpu` is the default; `--device cuda` selects CUDA. `--lr`, `--epochs`, `--batch-size`, and `--seed` control optimization. Method parameters are in `config.json`; `--set key=value` overrides one value using JSON syntax. Use identical splits and seeds across comparisons.
-
-## Calibration
-
-For interval or classification confidence calibration, use independent groups excluded from fitting and checkpoint selection:
+Variants: `full`, `baseline`, `no_reliability`, `no_time_guard`. Reuse the prepared data and training seed:
 
 ```bash
-yieldlineage calibrate --input data/prepared/calibration.npz --model runs/full/model.pt --output runs/full/calibrated.pt
-```
-
-Evaluate `calibrated.pt` with the same evaluation command. Classification uses temperature scaling; numeric intervals use a 90% group-maximum split-calibration expansion. Insufficient independent units retain infinite intervals. Pretraining checkpoints can initialize supervised training with `train --init path/to/model.pt`.
-
-## Baselines and ablations
-
-Available variants: `full`, `baseline`, `no_reliability`, `no_time_guard`. `baseline` removes the paper-specific mechanism while retaining the input and prediction task. Other variants disable their named component.
-
-```bash
-yieldlineage train --input data/prepared --output runs/baseline --config config.json --variant baseline
+yieldlineage train --input data/prepared --output runs/baseline --config config.json --variant baseline --epochs 100 --batch-size 16 --seed 13
 yieldlineage evaluate --input data/prepared/test.npz --model runs/baseline/model.pt --output runs/baseline/evaluation
 ```
 
-## Metrics and implementation conventions
+## Outputs
 
-Classification reports accuracy, balanced accuracy, macro-F1, NLL, confidence ECE, and worst-group F1; binary tasks add AUROC and AUPRC. Unknown labels use -1 and enable unknown AUROC and OSCR. Segmentation reports Dice, IoU, precision, recall, MAE, Brier/ECE, two-pixel boundary F1, symmetric contour distance, and HD95. Reconstruction reports RMSE, MAE, signed bias, unit-range PSNR, and Gaussian-window SSIM. Each method adds its mechanism metrics where applicable.
+- `data/prepared/*.npz`: grouped data splits.
+- `runs/full/model.pt`: validation-selected parameters and model configuration.
+- `runs/full/history.json` and `training.json`: objectives and run settings.
+- `runs/full/evaluation/predictions.npz` and `metrics.json`: predictions/mechanism arrays and computed metrics.
 
-Parameter counts and forward timing describe the executing process. Use batch size one and a declared device configuration for device latency comparisons. Physical energy and scores from external task evaluators require measured inputs; they are not inferred from parameter counts. All prediction arrays remain available for task-specific evaluation.
+```bash
+yieldlineage plot --input runs --output runs/figures
+```
 
-The implementation uses the explicit core operations described above with configurable compact networks. Numeric conventions and application-specific information are stated with the method and data schema. The parameter file contains the current defaults.
-
-## Selected reproduction setting
-
-The finite task now has repeated packet graphs at cutoffs 2/4/6, four wafers per lot and lot-isolated groups. Excursion wafers have event_time=8; controls use infinity. Fixed warning_threshold=0.5 and warning_persistence=2 confirm at the second qualifying observed cutoff. Optional real data use numeric wafer IDs, increasing cutoff values and one event_time per wafer. Metrics retain undetected events in the detection denominator and separately count control false alarms; lead time is scored only after confirmation.
+`runs/figures/*.png` compares saved evaluation metrics. All data, checkpoint and output paths are CLI arguments.
