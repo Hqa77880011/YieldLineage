@@ -30,10 +30,44 @@ class Model(nn.Module):
 
 
 def demo(seed,n,c):
-    rng=np.random.default_rng(seed);x=rng.normal(size=(n,8,6)).astype('float32');y=(x.mean((1,2))>0).astype('int64')
-    return {'x':x,'y':y,'lot_y':y.copy(),'adjacency':np.tile(np.triu(np.ones((8,8)),1),(n,1,1)).astype('float32'),'time':np.tile(np.arange(8),(n,1)).astype('float32'),
-            'cutoff':np.full(n,7,np.float32),'available':np.ones((n,8),np.float32),'uncertainty':np.zeros((n,8),np.float32),'quality':np.zeros((n,8,2),np.float32),'group':np.arange(n)}
+    rng=np.random.default_rng(seed);packets=[];labels=[];lots=[];wafer_ids=[];cutoffs=[];event_times=[];groups=[]
+    lot_risk=rng.normal(size=max(1,(n+11)//12))
+    for wafer in range((n+2)//3):
+        lot=wafer//4;latent=.6*lot_risk[lot]+.4*rng.normal();x=(latent+rng.normal(0,.4,(8,6))).astype('float32');y=int(latent>0)
+        for cutoff in (2.,4.,6.):
+            packets.append(x.copy());labels.append(y);lots.append(int(lot_risk[lot]>0));wafer_ids.append(wafer);cutoffs.append(cutoff);event_times.append(8. if y else np.inf);groups.append(lot)
+    x=np.asarray(packets[:n]);return {'x':x,'y':np.array(labels[:n]),'lot_y':np.array(lots[:n]),'wafer':np.array(wafer_ids[:n]),'event_time':np.array(event_times[:n]),
+            'adjacency':np.tile(np.triu(np.ones((8,8)),1),(n,1,1)).astype('float32'),'time':np.tile(np.arange(8),(n,1)).astype('float32'),
+            'cutoff':np.array(cutoffs[:n],np.float32),'available':np.ones((n,8),np.float32),'uncertainty':np.zeros((n,8),np.float32),'quality':np.zeros((n,8,2),np.float32),'group':np.array(groups[:n])}
 
 
 def measure(p,d,c):
-    allowed=d['adjacency'].transpose(0,2,1)>0;mass=p['path'].sum();return {'path_order_consistency':float(p['path'][allowed].sum()/max(mass,1e-8)),'mean_source_reliability':float(p['reliability'].mean())}
+    allowed=d['adjacency'].transpose(0,2,1)>0;mass=p['path'].sum();result={'path_order_consistency':float(p['path'][allowed].sum()/max(mass,1e-8)),'mean_source_reliability':float(p['reliability'].mean())}
+    if 'event_time' in d:result.update(warning_metrics(p['probability'][:,1],d,c))
+    return result
+
+
+def warning_metrics(probability,data,config):
+    """Confirm persistent warnings at observed cutoffs, then score event lead time."""
+    if 'wafer' not in data:raise ValueError('Warning evaluation requires numeric wafer IDs')
+    leads=[];events=detected=controls=false_alarms=0
+    persistence=int(config.get('warning_persistence',2));threshold=float(config.get('warning_threshold',.5))
+    if persistence<1 or not 0<=threshold<=1:raise ValueError('Invalid fixed warning rule')
+    for wafer in np.unique(data['wafer']):
+        ids=np.flatnonzero(data['wafer']==wafer);ids=ids[np.argsort(data['cutoff'][ids],kind='stable')]
+        times=np.asarray(data['cutoff'][ids]);truth=np.asarray(data['event_time'][ids])
+        if not np.isfinite(times).all() or np.any(np.diff(times)<=0) or np.isnan(truth).any() or not np.all(truth==truth[0]):raise ValueError('Use increasing cutoffs and one event time per wafer')
+        event=float(truth[0]);streak=0;alarm=None
+        for index,time in zip(ids,times):
+            if time>=event:break
+            streak=streak+1 if probability[index]>=threshold else 0
+            if streak>=persistence:alarm=float(time);break
+        if np.isfinite(event):
+            events+=1
+            if alarm is not None:detected+=1;leads.append(event-alarm)
+        else:
+            controls+=1;false_alarms+=alarm is not None
+    return {'warning_event_count':events,'warning_detected_event_count':detected,
+            'warning_detection_fraction':detected/events if events else None,
+            'warning_lead_time_mean':float(np.mean(leads)) if leads else None,
+            'false_alarm_wafer_fraction':false_alarms/controls if controls else None}

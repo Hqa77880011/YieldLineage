@@ -1,4 +1,6 @@
 {
   "width": 32,
-  "quality_dimensions": 2
+  "quality_dimensions": 2,
+  "warning_threshold": 0.5,
+  "warning_persistence": 2
 }

@@ -63,3 +63,7 @@ Classification reports accuracy, balanced accuracy, macro-F1, NLL, confidence EC
 Parameter counts and forward timing describe the executing process. Use batch size one and a declared device configuration for device latency comparisons. Physical energy and scores from external task evaluators require measured inputs; they are not inferred from parameter counts. All prediction arrays remain available for task-specific evaluation.
 
 The implementation uses the explicit core operations described above with configurable compact networks. Numeric conventions and application-specific information are stated with the method and data schema. The parameter file contains the current defaults.
+
+## Selected reproduction setting
+
+The finite task now has repeated packet graphs at cutoffs 2/4/6, four wafers per lot and lot-isolated groups. Excursion wafers have event_time=8; controls use infinity. Fixed warning_threshold=0.5 and warning_persistence=2 confirm at the second qualifying observed cutoff. Optional real data use numeric wafer IDs, increasing cutoff values and one event_time per wafer. Metrics retain undetected events in the detection denominator and separately count control false alarms; lead time is scored only after confirmation.
